@@ -25,12 +25,12 @@ dotnet tool install --global unbom
     Usage: unbom [options] <filespec>
 
     Options:
-        -r, --recurse              recurse subdirectories
-        -n, --nobackup             do not save a backup file
+        -r, --recurse              Recurse subdirectories
+        -b, --backup               Save a backup file
 
 ## example
 
-    unbom -r *.cs
+    unbom ./*.cs -r 
 
 Remove UTF-8 BOM markers from all files with ".cs" extensions and subdirectories. Saves old versions of files in "filename.bak" file.
 

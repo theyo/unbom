@@ -6,6 +6,8 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text;
 
 namespace Unbom
 {
@@ -14,25 +16,25 @@ namespace Unbom
         private static readonly byte[] bom = new byte[] { 0xEF, 0xBB, 0xBF };
 
         /// <summary>
-        /// Removes UTF-8 BOM markers from text files.
+        /// Removes BOM markers from UTF-8 files.
         /// </summary>
         /// <param name="argument">Path to scan.</param>
-        /// <param name="recurse">recurse subdirectories.</param>
-        /// <param name="nobackup">do not save a backup file.</param>
-        public static void Main(string argument, bool recurse = false, bool nobackup = true)
+        /// <param name="recurse">Recurse subdirectories.</param>
+        /// <param name="backup">Save a backup file.</param>
+        public static void Main(string argument, bool recurse = false, bool backup = true)
         {
-            unbom(argument, recurse, nobackup);
+
+
+            UnBom(argument, recurse, backup);
         }
 
-        private static void unbom(
-            string path,
-            bool recurse = false,
-            bool noBackup = false)
+        private static void UnBom(string path, bool recurse = false, bool backup = false)
         {
-            Debug.WriteLine($"path={path} recurse={recurse} nobackup={noBackup}");
+            Debug.WriteLine($"path={path} recurse={recurse} backup={backup}");
 
-            string? pattern = Path.GetFileName(path);
-            if (String.IsNullOrEmpty(pattern))
+            var pattern = path.Contains(Path.DirectorySeparatorChar) || path.Contains(Path.AltDirectorySeparatorChar) ? Path.GetFileName(path) : path;
+
+            if (string.IsNullOrWhiteSpace(pattern))
             {
                 pattern = "*";
             }
@@ -45,15 +47,18 @@ namespace Unbom
 
             try
             {
-                var files = Directory.EnumerateFiles(path, pattern, recurse
-                    ? SearchOption.AllDirectories
-                    : SearchOption.TopDirectoryOnly);
-                int count = 0;
-                foreach (string fileName in files)
+                var searchOption = recurse ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+
+                var files = Directory.EnumerateFiles(path, pattern, searchOption);
+
+                var count = 0;
+
+                foreach (var fileName in files)
                 {
-                    removeBom(fileName, noBackup);
+                    RemoveBomMarkers(fileName, backup);
                     count++;
                 }
+
                 Console.WriteLine($"{count} file(s) processed");
             }
             catch (DirectoryNotFoundException)
@@ -62,35 +67,64 @@ namespace Unbom
             }
         }
 
-        private static void removeBom(string fileName, bool nobackup)
+        private static void RemoveBomMarkers(string fileName, bool backup)
         {
-            string tempName;
-            var buffer = new byte[bom.Length].AsSpan();
-            using (var stream = File.OpenRead(fileName))
+            Span<byte> buffer = stackalloc byte[bom.Length];
+
+            using var reader = new StreamReader(fileName, detectEncodingFromByteOrderMarks: true);
+
+            if (reader.CurrentEncoding != Encoding.UTF8)
             {
-                int bytesRead = stream.Read(buffer);
-                if (bytesRead != buffer.Length || !buffer.SequenceEqual(bom))
+                // Not a UTF-8 file, nothing to do
+                return;
+            }
+
+            // read first few bytes to check for BOM and leave the stream after the BOM
+            var readBytes = reader.BaseStream.Read(buffer);
+
+            if (readBytes != buffer.Length || !buffer.SequenceEqual(bom))
+            {
+                // No BOM detected, nothing to do
+                return;
+            }
+
+            Console.Write("{0}: BOM found - removing...", fileName);
+
+            if (backup)
+            {
+                var backupName = fileName + ".bak";
+                File.Copy(fileName, backupName, true);
+            }
+
+            // GetTempFileName also creates the file
+            var tempName = Path.GetTempFileName();
+
+            try
+            {
+                using var writer = new StreamWriter(tempName, false, Encoding.UTF8);
+
+                // Write the rest of the file (position is after BOM from reading BOM bytes earlier)
+                writer.Write(reader.ReadToEnd());
+
+                writer.Flush();
+                writer.Close();
+
+                //replace original with new file
+                File.Move(tempName, fileName, true);
+
+                Console.WriteLine("done");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error processing file {fileName}: {ex.Message}");
+
+                if (File.Exists(tempName))
                 {
-                    return;
+                    File.Delete(tempName);
                 }
-
-                Console.Write("{0}: BOM found - removing...", fileName);
-
-                // GetTempFileName also creates the file
-                string tempFileName = Path.GetTempFileName();
-                using var outputStream = File.Create(tempName = tempFileName);
-                stream.CopyTo(outputStream);
             }
 
-            string backupName = fileName + ".bak";
-            File.Move(fileName, backupName, overwrite: true);
-            File.Move(tempName, fileName);
-            if (nobackup)
-            {
-                File.Delete(backupName);
-            }
-
-            Console.WriteLine("done");
+            reader.Close();
         }
     }
 }

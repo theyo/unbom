@@ -7,7 +7,7 @@
         <Version>3.3.1</Version>
 
         <OutputType>Exe</OutputType>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFramework>net9.0</TargetFramework>
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>unbom</ToolCommandName>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -22,7 +22,7 @@
 Add README entry to the package
 ]]>
         </PackageReleaseNotes>
-        <LangVersion>10.0</LangVersion>
+        <LangVersion>11.0</LangVersion>
     </PropertyGroup>
     <PropertyGroup Condition="$(Configuration)=='Release'">
         <WarningsAsErrors>true</WarningsAsErrors>
