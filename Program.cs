@@ -4,6 +4,7 @@
 // </copyright>
 
 using System;
+using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Diagnostics;
@@ -44,6 +45,8 @@ namespace Unbom
         private static readonly byte[] bom = new byte[] { 0xEF, 0xBB, 0xBF };
         internal static readonly string[] defaultPatterns = new string[] { "*" };
 
+        internal static Statistics statistics = new();
+
         static int Main(string[] args)
         {
             var rootCommand = new RootCommand("Removes BOM markers from UTF-8 files");
@@ -54,7 +57,6 @@ namespace Unbom
                 Arity = ArgumentArity.ZeroOrMore,
                 DefaultValueFactory = _ => defaultPatterns
             });
-
 
             rootCommand.Options.Add(
             new Option<DirectoryInfo>("--path")
@@ -80,7 +82,7 @@ namespace Unbom
                     DefaultValueFactory = _ => false,
                 });
 
-            rootCommand.SetAction(parsedResult =>
+            rootCommand.SetAction(async parsedResult =>
             {
                 var patterns = parsedResult.GetValue<string[]>("pattern");
                 var directory = parsedResult.GetValue<DirectoryInfo>("--path");
@@ -92,54 +94,60 @@ namespace Unbom
                     if (string.IsNullOrWhiteSpace(pattern))
                     {
                         Console.Error.WriteLine("Invalid pattern: '{0}'", pattern);
-                        return 1; // Exit with error code
+                        return; // Exit with error code
                     }
-
                 }
 
-                UnBom(directory!, patterns!, recurse, !noBackup);
-
-                return 0;
+                await UnBom(directory!, patterns!, recurse, !noBackup);
             });
 
-            ParseResult parseResult = rootCommand.Parse(args);
+            var parseResult = rootCommand.Parse(args);
 
-            return parseResult.Invoke();
+            var result = parseResult.Invoke();
+
+            statistics.PrintSummary();
+
+            return result;
         }
 
-        private static void UnBom(DirectoryInfo directory, string[] patterns, bool recurse, bool backup)
+        private static async Task UnBom(DirectoryInfo directory, string[] patterns, bool recurse, bool backup)
         {
             Debug.WriteLine($"directory={directory.FullName} argument={patterns} recurse={recurse} backup={backup}");
-
-            var statistics = new Statistics();
 
             try
             {
                 var searchOption = recurse ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
 
+                var tasks = new List<Task>();
+
                 foreach (var pattern in patterns!)
                 {
-                    var files = directory.EnumerateFiles(pattern, searchOption);
-
-                    foreach (var file in files)
+                    try
                     {
-                        RemoveBomMarkers(file, backup, statistics);
+                        var files = directory.EnumerateFiles(pattern, searchOption);
+
+                        foreach (var file in files)
+                        {
+                            tasks.Add(RemoveBomMarkers(file, backup, statistics));
+                        }
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        Console.Error.WriteLine("Access denied to files in directory {0}: {1}", directory.FullName, ex.Message);
                     }
                 }
 
-                statistics.PrintSummary();
+                await Task.WhenAll(tasks);
             }
-            catch (DirectoryNotFoundException)
+            catch (UnauthorizedAccessException ex)
             {
-                Console.Error.WriteLine("Directory not found: {0}", directory.FullName);
+                Console.Error.WriteLine("Access denied to directory {0}: {1}", directory.FullName, ex.Message);
             }
         }
 
-        private static void RemoveBomMarkers(FileInfo file, bool backup, Statistics statistics)
+        private static async Task RemoveBomMarkers(FileInfo file, bool backup, Statistics statistics)
         {
             statistics.TotalFilesEvaluated++;
-
-            Span<byte> bomBytes = stackalloc byte[bom.Length];
 
             if (!file.Exists || file.Length < bom.Length)
             {
@@ -152,10 +160,10 @@ namespace Unbom
                 using var stream = file.Open(FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
                 // Read BOM bytes
-                var bomBuffer = new byte[bomBytes.Length];
-                var bytesRead = stream.Read(bomBuffer, 0, bomBuffer.Length);
+                var bomBuffer = new byte[bom.Length];
+                var bytesRead = await stream.ReadAsync(bomBuffer, 0, bomBuffer.Length).ConfigureAwait(false);
 
-                if (bytesRead != bomBytes.Length || !bomBuffer.SequenceEqual(bom))
+                if (bytesRead != bom.Length || !bomBuffer.SequenceEqual(bom))
                 {
                     // No BOM detected, nothing to do
                     return;
@@ -190,11 +198,11 @@ namespace Unbom
 
                     while (stream.Position < stream.Length)
                     {
-                        bytesRead = stream.Read(readBuffer, 0, bufferSize);
-                        tempStream.Write(readBuffer, 0, bytesRead);
+                        bytesRead = await stream.ReadAsync(readBuffer, 0, bufferSize).ConfigureAwait(false);
+                        await tempStream.WriteAsync(readBuffer, 0, bytesRead).ConfigureAwait(false);
                     }
 
-                    tempStream.Flush();
+                    await tempStream.FlushAsync().ConfigureAwait(false);
 
                     // Replace original with new file
                     File.Move(tempName, file.FullName, true);
@@ -232,7 +240,7 @@ namespace Unbom
                     }
                 }
             }
-            catch(UnauthorizedAccessException ex)
+            catch (UnauthorizedAccessException ex)
             {
                 Console.WriteLine("{0}: Access denied. {1}", file.FullName, ex.Message);
                 statistics.ErrorsEncountered++;
