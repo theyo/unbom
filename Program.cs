@@ -10,6 +10,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Unbom
 {
@@ -47,25 +48,12 @@ namespace Unbom
         {
             var rootCommand = new RootCommand("Removes BOM markers from UTF-8 files");
 
-            var patternsArgument = new Argument<string[]>("pattern")
+            rootCommand.Arguments.Add(new Argument<string[]>("pattern")
             {
                 Description = "Files to process. e.g., *.txt, *.cs, etc. Multiple patterns can be provided.",
                 Arity = ArgumentArity.ZeroOrMore,
                 DefaultValueFactory = _ => defaultPatterns
-            };
-
-            patternsArgument.Validators.Add(item =>
-            {
-                if (item.Tokens.Count == 0)
-                {
-                    item.AddError("At least one pattern must be specified.");
-                    return;
-                }
-
-                if (item.Tokens[0].
             });
-
-            rootCommand.Arguments.Add(patternsArgument);
 
 
             rootCommand.Options.Add(
@@ -151,7 +139,7 @@ namespace Unbom
         {
             statistics.TotalFilesEvaluated++;
 
-            Span<byte> buffer = stackalloc byte[bom.Length];
+            Span<byte> bomBytes = stackalloc byte[bom.Length];
 
             if (!file.Exists || file.Length < bom.Length)
             {
@@ -161,100 +149,98 @@ namespace Unbom
 
             try
             {
-                // Attempt to open the file to check if it is accessible
-                using var _ = file.OpenRead();
+                using var stream = file.Open(FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+                // Read BOM bytes
+                var bomBuffer = new byte[bomBytes.Length];
+                var bytesRead = stream.Read(bomBuffer, 0, bomBuffer.Length);
+
+                if (bytesRead != bomBytes.Length || !bomBuffer.SequenceEqual(bom))
+                {
+                    // No BOM detected, nothing to do
+                    return;
+                }
+
+                statistics.Utf8WithBomFiles++;
+
+                Console.Write("{0}: BOM found - removing...", file.FullName);
+
+                FileInfo? backupFileInfo = null;
+
+                if (backup)
+                {
+                    var backupFileName = file.FullName + ".bak";
+                    Debug.WriteLine("Backup enabled, creating {0}...", backupFileName);
+
+                    backupFileInfo = file.CopyTo(backupFileName, true);
+
+                    Debug.Write("done!", backupFileName);
+                }
+
+                // GetTempFileName also creates the file
+                var tempName = Path.GetTempFileName();
+
+                try
+                {
+                    using var tempStream = new FileStream(tempName, FileMode.Create, FileAccess.Write);
+
+                    // Stream the rest of the file (excluding BOM)
+                    var bufferSize = 8192; // 8 KB buffer
+                    var readBuffer = new byte[bufferSize];
+
+                    while (stream.Position < stream.Length)
+                    {
+                        bytesRead = stream.Read(readBuffer, 0, bufferSize);
+                        tempStream.Write(readBuffer, 0, bytesRead);
+                    }
+
+                    tempStream.Flush();
+
+                    // Replace original with new file
+                    File.Move(tempName, file.FullName, true);
+
+                    statistics.BomRemovedFiles++;
+                    Console.Write("done!");
+                }
+                catch (Exception ex)
+                {
+                    statistics.ErrorsEncountered++;
+                    Console.Error.WriteLine("Error processing file {0}: {1}", file.FullName, ex.Message);
+
+                    if (backup && backupFileInfo is FileInfo backupFile && backupFile.Exists)
+                    {
+                        try
+                        {
+                            backupFile.MoveTo(file.FullName, true);
+                        }
+                        catch (Exception exRestoreBackup)
+                        {
+                            Console.Error.WriteLine("Could not restore file {0}: {1}", file.FullName, exRestoreBackup.Message);
+                            // Note: Not incrementing error count for backup restoration failures as they're secondary errors
+                        }
+                    }
+                }
+                finally
+                {
+                    if (File.Exists(tempName))
+                    {
+                        Debug.WriteLine("Temp file {0} still exists. Cleaning up...", tempName);
+
+                        File.Delete(tempName);
+
+                        Debug.Write("done!");
+                    }
+                }
+            }
+            catch(UnauthorizedAccessException ex)
+            {
+                Console.WriteLine("{0}: Access denied. {1}", file.FullName, ex.Message);
+                statistics.ErrorsEncountered++;
             }
             catch (IOException ex)
             {
                 Console.WriteLine("{0}: Cannot access file. {1}", file.FullName, ex.Message);
                 statistics.ErrorsEncountered++;
-                return;
-            }
-
-            using var stream = file.Open(FileMode.Open, FileAccess.Read, FileShare.None);
-            using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
-
-            if (reader.CurrentEncoding != Encoding.UTF8)
-            {
-                // Not a UTF-8 file, nothing to do
-                return;
-            }
-
-            // read first few bytes to check for BOM and leave the stream position after the BOM
-            var readBytes = reader.BaseStream.Read(buffer);
-
-            if (readBytes != buffer.Length || !buffer.SequenceEqual(bom))
-            {
-                // No BOM detected, nothing to do
-                return;
-            }
-
-            statistics.Utf8WithBomFiles++;
-
-            Console.Write("{0}: BOM found - removing...", file.FullName);
-
-            FileInfo? backupFileInfo = null;
-
-            if (backup)
-            {
-                var backupFileName = file.FullName + ".bak";
-                Debug.WriteLine("Backup enabled, creating {0}...", backupFileName);
-
-                backupFileInfo = file.CopyTo(backupFileName, true);
-
-                Debug.Write("done!", backupFileName);
-            }
-
-            // GetTempFileName also creates the file
-            var tempName = Path.GetTempFileName();
-
-            try
-            {
-                using var writer = new StreamWriter(tempName, false, Encoding.UTF8);
-
-                // Write the rest of the file (position is after BOM from reading BOM bytes earlier)
-                writer.Write(reader.ReadToEnd());
-
-                writer.Flush();
-                writer.Close();
-
-                //replace original with new file
-                File.Move(tempName, file.FullName, true);
-
-                statistics.BomRemovedFiles++;
-                Console.Write("done!");
-            }
-            catch (Exception ex)
-            {
-                statistics.ErrorsEncountered++;
-                Console.Error.WriteLine("Error processing file {0}: {1}", file.FullName, ex.Message);
-
-                if (backup && backupFileInfo is FileInfo backupFile && backupFile.Exists)
-                {
-                    try
-                    {
-                        backupFile.MoveTo(file.FullName, true);
-                    }
-                    catch (Exception exRestoreBackup)
-                    {
-                        Console.Error.WriteLine("Could not restore file {0}: {1}", file.FullName, exRestoreBackup.Message);
-                        // Note: Not incrementing error count for backup restoration failures as they're secondary errors
-                    }
-                }
-            }
-            finally
-            {
-                // Ensure the temp file is deleted if it still exists
-                if (File.Exists(tempName))
-                {
-                    Debug.WriteLine("Temp file {0} still exists. Cleaning up...", tempName);
-
-                    File.Delete(tempName);
-
-                    Debug.Write("done!");
-                }
-
-                reader.Close();
             }
         }
     }
