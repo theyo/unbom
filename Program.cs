@@ -22,6 +22,11 @@ namespace Unbom
         public int BomRemovedFiles { get; set; }
         public int ErrorsEncountered { get; set; }
 
+        public bool HasStatistics()
+        {
+            return TotalFilesEvaluated + Utf8WithBomFiles + BomRemovedFiles + ErrorsEncountered > 0;
+        }
+
         public void PrintSummary()
         {
             Console.WriteLine();
@@ -105,7 +110,10 @@ namespace Unbom
 
             var result = parseResult.Invoke();
 
-            statistics.PrintSummary();
+            if (statistics.HasStatistics())
+            {
+                statistics.PrintSummary();
+            }
 
             return result;
         }
