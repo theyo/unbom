@@ -21,7 +21,7 @@ dotnet tool install --global unbom
 ```
 
 ## usage
-
+```
 Description:
   Removes BOM markers from UTF-8 files
 
@@ -37,9 +37,10 @@ Options:
   --path          Path to scan. e.g., ./ [default: ./]
   -r, --recurse   Recurse subdirectories. [default: False]
   -n, --noBackup  Do not save a backup file. [default: False]
+```
 
 ## example
-Remove UTF-8 BOM markers from all files with ".cs" extensions in the current directory and subdirectories without saving backup files.
+Remove UTF-8 BOM markers from all files with ".cs" extension in the current directory and subdirectories without saving backup files.
 
     unbom *.cs -r -n
 
